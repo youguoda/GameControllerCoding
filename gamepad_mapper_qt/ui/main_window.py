@@ -17,7 +17,7 @@ from core.constants import (
     APP_NAME, APP_VERSION,
     LT_LONG_PRESS_SEC, PROFILE_ORDER,
 )
-from ui.styles.tokens import ACCENT, ACCENT_DIM, build_qss
+from ui.styles.tokens import build_qss
 from core import paths
 from core.active_profile import ActiveProfile
 from core.mapping_history import MappingHistory
@@ -55,7 +55,6 @@ from ui.widgets.profile_manager_dialog import ProfileManagerDialog
 from ui.widgets.settings_dialog import SettingsDialog
 from ui.widgets.status_bar import StatusBar
 from ui.widgets.status_pill import StatusPill
-from ui.win32_theme import apply_dark_frame
 
 
 class MainWindow(QMainWindow):
@@ -782,9 +781,8 @@ class MainWindow(QMainWindow):
         self._status_bar.set_running(running)
         self._binding_panel.set_live_hint(running)
         self._update_liveness()
-        # 任务栏图标和窗口边框一起换色：映射中亮青，停止时暗青
+        # 任务栏图标跟托盘同色：运行中亮青，停止时灰
         self.setWindowIcon(make_gamepad_icon(running))
-        apply_dark_frame(self, border_color=ACCENT if running else ACCENT_DIM)
         if not running:
             self._status_bar.set_status("已停止")
 

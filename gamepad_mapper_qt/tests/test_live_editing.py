@@ -112,19 +112,14 @@ def test_物理即选_运行中不跟随(主窗口):
 
 # ---------- 死功能接线 ----------
 
-def test_映射启停联动窗口边框与图标(主窗口, monkeypatch):
-    from ui.styles.tokens import ACCENT, ACCENT_DIM
+def test_映射启停只换图标_不再动窗口边框(主窗口):
+    """边框线按需求去掉了 —— 主窗口不再引用 DWM 边框接口"""
+    import ui.main_window as mw
 
-    borders = []
-    monkeypatch.setattr(
-        "ui.main_window.apply_dark_frame",
-        lambda w, border_color: borders.append(border_color),
-    )
+    assert not hasattr(mw, "apply_dark_frame")
 
     主窗口._on_engine_state(True)
-    主窗口._on_engine_state(False)
-
-    assert borders == [ACCENT, ACCENT_DIM]
+    assert not 主窗口.windowIcon().isNull()   # 图标变色仍生效
 
 
 def test_图上已绑定角标有数据源(主窗口):

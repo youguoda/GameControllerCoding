@@ -15,13 +15,15 @@ import sys
 
 from PyQt6.QtCore import QEvent, QObject
 
-from ui.styles.tokens import ACCENT_DIM, SURFACE, TEXT
+from ui.styles.tokens import SURFACE, TEXT
 
 _DWMWA_USE_IMMERSIVE_DARK_MODE = 20
 # 34/35/36 只在 Win11 22000+ 生效，传给更老的系统只会返回错误码，无副作用
 _DWMWA_BORDER_COLOR = 34
 _DWMWA_CAPTION_COLOR = 35
 _DWMWA_TEXT_COLOR = 36
+# DWMWA_COLOR_NONE：窗口外圈不画任何边框线（默认的 1px 白线也不要）
+_DWMWA_COLOR_NONE = 0xFFFFFFFE
 
 
 def _colorref(hex_color: str) -> int:
@@ -31,8 +33,8 @@ def _colorref(hex_color: str) -> int:
     return red | (green << 8) | (blue << 16)
 
 
-def apply_dark_frame(widget, border_color: str = ACCENT_DIM) -> None:
-    """把一个顶层窗口的标题栏/边框刷成主题色"""
+def apply_dark_frame(widget) -> None:
+    """深色标题栏、主题色标题文字，窗口外圈不画边框线"""
     if sys.platform != "win32":
         return
     try:
@@ -45,12 +47,11 @@ def apply_dark_frame(widget, border_color: str = ACCENT_DIM) -> None:
             if dwm.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(enabled), 4) == 0:
                 break
 
-        for attr, color in (
-            (_DWMWA_CAPTION_COLOR, SURFACE),
-            (_DWMWA_TEXT_COLOR, TEXT),
-            (_DWMWA_BORDER_COLOR, border_color),
+        for attr, value in (
+            (_DWMWA_CAPTION_COLOR, ctypes.c_int(_colorref(SURFACE))),
+            (_DWMWA_TEXT_COLOR, ctypes.c_int(_colorref(TEXT))),
+            (_DWMWA_BORDER_COLOR, ctypes.c_uint(_DWMWA_COLOR_NONE)),
         ):
-            value = ctypes.c_int(_colorref(color))
             dwm.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(value), 4)
     except Exception:
         pass

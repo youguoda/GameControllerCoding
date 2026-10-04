@@ -45,6 +45,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon='assets/app.ico',  # 资源管理器 / 任务栏 / 快捷方式里的手柄徽章
 )
 
 coll = COLLECT(
