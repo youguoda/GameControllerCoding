@@ -2,6 +2,7 @@
 """主窗口"""
 
 import os
+import re
 import time
 
 from PyQt6.QtCore import Qt, QTimer
@@ -13,12 +14,14 @@ from PyQt6.QtWidgets import (
 
 from core.button_map import IDX_LT, IDX_START
 from core.constants import (
-    APP_NAME, APP_VERSION, THEME,
+    APP_NAME, APP_VERSION,
     LT_LONG_PRESS_SEC, PROFILE_ORDER,
 )
+from ui.styles.tokens import ACCENT, ACCENT_DIM, build_qss
 from core import paths
 from core.active_profile import ActiveProfile
-from core.slots import CONFLICT, binding_kind, conflict_reason
+from core.mapping_history import MappingHistory
+from core.slots import CONFLICT, RESERVED, binding_kind, conflict_reason
 from core.autostart import (
     apply_enabled as apply_autostart,
     is_enabled as autostart_enabled,
@@ -28,12 +31,14 @@ from core.config_store import (
     AppState,
     ConfigNotSavable,
     HarnessProfile,
+    delete_profile,
     list_profile_ids,
     load_app_state,
     load_active_profile_id,
     load_profile,
     save_app_state,
     save_active_profile_id,
+    save_profile,
 )
 from core.gamepad_input import GamepadInput
 from core.joystick_manager import JoystickManager
@@ -41,19 +46,26 @@ from core.keyboard_output import KeyboardOutput
 from core.mapping_engine import MappingEngine
 from core.mouse_output import MouseOutput
 from core.window_focus import focus_process, is_process_foreground
+from ui.app_icon import make_gamepad_icon, make_gamepad_pixmap
 from ui.tray import Tray
+from ui.widgets.binding_panel import BindingPanel
 from ui.widgets.gamepad_panel import GamepadPanel
 from ui.widgets.mapping_table import MappingTable
+from ui.widgets.profile_manager_dialog import ProfileManagerDialog
+from ui.widgets.settings_dialog import SettingsDialog
 from ui.widgets.status_bar import StatusBar
-from ui.widgets.key_bind_dialog import KeyBindDialog
+from ui.widgets.status_pill import StatusPill
+from ui.win32_theme import apply_dark_frame
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME}  v{APP_VERSION}")
-        self.setMinimumSize(1100, 780)
-        self.resize(1200, 860)
+        # 任务栏 / Alt+Tab 的图标，跟托盘同一枚手柄徽章；启停映射时换色
+        self.setWindowIcon(make_gamepad_icon(False))
+        self.setMinimumSize(1180, 800)
+        self.resize(1280, 880)
 
         self._joystick = JoystickManager()
         self._input = GamepadInput(
@@ -69,6 +81,7 @@ class MainWindow(QMainWindow):
         self._app_state = AppState()
         self._frame_count = 0
         self._reported_refusals: set[str] = set()
+        self._history = MappingHistory()
         self._really_quitting = False      # 区分「关窗口」和「真退出」
 
         self._load_styles()
@@ -106,11 +119,8 @@ class MainWindow(QMainWindow):
         self.close()
 
     def _load_styles(self):
-        # 走 paths：打包后 qss 在 bundle 里，位置由 PyInstaller 决定
-        style_path = paths.resource_path("ui", "styles", "theme.qss")
-        if os.path.isfile(style_path):
-            with open(style_path, "r", encoding="utf-8") as f:
-                self.setStyleSheet(f.read())
+        # 样式由 ui/styles/tokens.py 生成 —— 配色只有这一份事实
+        self.setStyleSheet(build_qss())
 
     def _setup_ui(self):
         central = QWidget()
@@ -122,13 +132,17 @@ class MainWindow(QMainWindow):
 
         header = QFrame()
         header.setObjectName("headerFrame")
-        header.setFixedHeight(84)
+        header.setFixedHeight(76)
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(24, 0, 24, 0)
         header_layout.setSpacing(16)
 
+        logo = QLabel()
+        logo.setPixmap(make_gamepad_pixmap(running=False, size=44))
+        header_layout.addWidget(logo)
+
         title_col = QVBoxLayout()
-        title_col.setSpacing(4)
+        title_col.setSpacing(2)
         title = QLabel(APP_NAME)
         title.setObjectName("titleLabel")
         subtitle = QLabel("Harness / 浏览器 / 通用 · 统一鼠标层")
@@ -149,29 +163,26 @@ class MainWindow(QMainWindow):
         self._profile_combo.currentIndexChanged.connect(self._on_profile_changed)
         header_layout.addWidget(self._profile_combo)
 
-        self._gate_dot = QLabel("●")
-        self._gate_dot.setObjectName("statusDot")
-        self._gate_dot.setStyleSheet(f"color: {THEME['warn']};")
-        header_layout.addWidget(self._gate_dot)
+        header_layout.addSpacing(8)
 
-        self._gate_label = QLabel("未对准")
-        self._gate_label.setObjectName("statusText")
-        header_layout.addWidget(self._gate_label)
+        self._gate_pill = StatusPill("未对准", "warn")
+        header_layout.addWidget(self._gate_pill)
 
-        self._conn_dot = QLabel("●")
-        self._conn_dot.setObjectName("statusDot")
-        self._conn_dot.setStyleSheet(f"color: {THEME['warn']};")
-        header_layout.addWidget(self._conn_dot)
-
-        self._conn_label = QLabel("未连接")
-        self._conn_label.setObjectName("statusText")
-        header_layout.addWidget(self._conn_label)
+        self._conn_pill = StatusPill("未连接", "warn")
+        header_layout.addWidget(self._conn_pill)
 
         refresh_btn = QPushButton("⟳  刷新")
         refresh_btn.setObjectName("refreshBtn")
         refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         refresh_btn.clicked.connect(self._refresh_joystick)
         header_layout.addWidget(refresh_btn)
+
+        manage_btn = QPushButton("⚙")
+        manage_btn.setObjectName("iconBtn")
+        manage_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        manage_btn.setToolTip("管理方案：新建 / 重命名 / 删除 / 门控进程")
+        manage_btn.clicked.connect(self._open_profile_manager)
+        header_layout.addWidget(manage_btn)
 
         root.addWidget(header)
 
@@ -184,6 +195,10 @@ class MainWindow(QMainWindow):
 
         right_col = QVBoxLayout()
         right_col.setSpacing(12)
+
+        # 绑定面板在上（选中槽位后就地编辑），列表在下（结果视图）
+        self._binding_panel = BindingPanel()
+        right_col.addWidget(self._binding_panel)
 
         table_header = QHBoxLayout()
         table_header.setSpacing(12)
@@ -209,6 +224,14 @@ class MainWindow(QMainWindow):
         )
         table_header.addWidget(self._show_unbound_check)
 
+        self._undo_btn = QPushButton("↩ 撤销")
+        self._undo_btn.setObjectName("ghostBtn")
+        self._undo_btn.setEnabled(False)
+        self._undo_btn.setToolTip("恢复上一次的绑定改动（Ctrl+Z）")
+        self._undo_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._undo_btn.clicked.connect(self._undo_mapping_change)
+        table_header.addWidget(self._undo_btn)
+
         clear_all_btn = QPushButton("全部清除")
         clear_all_btn.setObjectName("clearBtn")
         clear_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -219,13 +242,6 @@ class MainWindow(QMainWindow):
         self._mapping_table = MappingTable()
         right_col.addWidget(self._mapping_table, stretch=1)
 
-        # 保留槽位的用途不再写死在这里 —— 点图上对应的键，状态栏会说明，
-        # 而且说得更准（同一事实两处表达迟早会漂移）。
-        hint = QLabel("点手柄图上的按键即可绑定")
-        hint.setObjectName("hintLabel")
-        hint.setWordWrap(True)
-        right_col.addWidget(hint)
-
         body.addLayout(right_col, stretch=6)
         root.addLayout(body, stretch=1)
 
@@ -233,16 +249,18 @@ class MainWindow(QMainWindow):
         root.addWidget(self._status_bar)
 
     def _connect_signals(self):
-        self._mapping_table.bind_requested.connect(self._open_bind_dialog)
-        # 每个信号只接一处：_on_slot_clicked 内部会调 _open_bind_dialog，
-        # 再直连一次就会弹两个对话框（表现为要取消两次）。
+        self._mapping_table.bind_requested.connect(self._request_bind)
+        self._mapping_table.row_selected.connect(self._on_table_row_selected)
+        # 每个信号只接一处：_on_slot_clicked 内部会调 _request_bind，
+        # 再直连一次就会弹两个编辑视图（表现为要取消两次）。
         self._gamepad_panel.slot_clicked.connect(self._on_slot_clicked)
         self._gamepad_panel.slot_refused.connect(self._on_slot_refused)
+        self._binding_panel.bind_committed.connect(self._on_bind_committed)
+        self._binding_panel.bind_cleared.connect(self._on_bind_cleared)
+        self._binding_panel.selection_changed.connect(self._on_panel_selection_changed)
         self._mapping_table.mapping_changed.connect(self._on_mapping_changed)
         self._status_bar.start_stop_clicked.connect(self._toggle_mapping)
-        self._status_bar.threshold_changed.connect(self._on_threshold_changed)
-        self._status_bar.mouse_sensitivity_changed.connect(self._on_mouse_sensitivity_changed)
-        self._status_bar.scroll_sensitivity_changed.connect(self._on_scroll_sensitivity_changed)
+        self._status_bar.settings_clicked.connect(self._open_settings)
         self._status_bar.launch_at_startup_changed.connect(self._on_launch_at_startup_changed)
         self._status_bar.auto_start_mapping_changed.connect(self._on_auto_start_mapping_changed)
 
@@ -252,6 +270,9 @@ class MainWindow(QMainWindow):
 
         shortcut = QShortcut(QKeySequence("F9"), self)
         shortcut.activated.connect(self._toggle_mapping)
+
+        undo_shortcut = QShortcut(QKeySequence("Ctrl+Z"), self)
+        undo_shortcut.activated.connect(self._undo_mapping_change)
 
     def _load_app_settings(self) -> None:
         self._app_state = load_app_state()
@@ -305,10 +326,16 @@ class MainWindow(QMainWindow):
         self._start_mapping(silent=True)
 
     def _load_profiles(self):
+        self._reload_profile_combo()
+        self._apply_profile(self._profile_combo.currentData() or PROFILE_ORDER[0])
+
+    def _reload_profile_combo(self) -> None:
+        """从磁盘重建方案下拉框 —— 启动、增删改方案后都走这里"""
         self._profile_ids = list_profile_ids()
         active_id = load_active_profile_id()
         if active_id not in self._profile_ids:
             self._profile_ids = list(PROFILE_ORDER)
+            active_id = self._profile_ids[0]
 
         self._profile_combo.blockSignals(True)
         self._profile_combo.clear()
@@ -321,17 +348,130 @@ class MainWindow(QMainWindow):
             else:
                 label = pid
             self._profile_combo.addItem(label, pid)
+            if profile:
+                gate = ", ".join(profile.process_names) or "任意窗口"
+                self._profile_combo.setItemData(
+                    self._profile_combo.count() - 1,
+                    f"门控: {gate}",
+                    Qt.ItemDataRole.ToolTipRole,
+                )
         idx = self._profile_ids.index(active_id) if active_id in self._profile_ids else 0
         self._profile_combo.setCurrentIndex(idx)
         self._profile_combo.blockSignals(False)
 
-        self._apply_profile(active_id)
+    def _open_profile_manager(self) -> None:
+        ProfileManagerDialog(self).exec()
+
+    def _open_settings(self) -> None:
+        """滑杆走对话框；信号连的是与旧底栏相同的处理器，改动即时生效"""
+        profile = self._active.profile
+        dialog = SettingsDialog(
+            threshold=profile.threshold,
+            mouse_sensitivity=profile.mouse_sensitivity,
+            scroll_sensitivity=profile.scroll_sensitivity,
+            parent=self,
+        )
+        dialog.threshold_changed.connect(self._on_threshold_changed)
+        dialog.mouse_sensitivity_changed.connect(self._on_mouse_sensitivity_changed)
+        dialog.scroll_sensitivity_changed.connect(self._on_scroll_sensitivity_changed)
+        dialog.exec()
+
+    # ---------- 方案管理（对话框只走这几个 ui_* 接口，不直接碰 core） ----------
+
+    def ui_profile_brief(self):
+        """(id, 显示名, 门控进程, 绑定数, 是否当前) 的列表"""
+        briefs = []
+        for pid in self._profile_ids:
+            profile = load_profile(pid)
+            if profile is None:
+                continue
+            briefs.append((
+                pid,
+                profile.display_name,
+                list(profile.process_names),
+                len(profile.mappings),
+                self._active is not None and pid == self._active.profile.id,
+            ))
+        return briefs
+
+    def ui_create_profile(self, profile_id: str, display_name: str):
+        profile_id = (profile_id or "").strip()
+        if not profile_id:
+            return False, "方案标识不能为空"
+        if not re.fullmatch(r"[A-Za-z0-9_\-]+", profile_id):
+            return False, "标识只能用英文、数字、下划线或连字符（它同时是配置文件名）"
+        if profile_id in self._profile_ids:
+            return False, f"方案 {profile_id} 已存在"
+        try:
+            save_profile(HarnessProfile(id=profile_id, display_name=display_name or profile_id))
+        except ConfigNotSavable as exc:
+            return False, str(exc)
+        except OSError as exc:
+            return False, f"写入失败: {exc}"
+        self._reload_profile_combo()
+        return True, ""
+
+    def ui_rename_profile(self, profile_id: str, display_name: str):
+        display_name = (display_name or "").strip()
+        if not display_name:
+            return False, "显示名不能为空"
+        if self._active and profile_id == self._active.profile.id:
+            self._active.set_display_name(display_name)
+        else:
+            profile = load_profile(profile_id)
+            if profile is None:
+                return False, f"方案 {profile_id} 不存在"
+            profile.display_name = display_name
+            try:
+                save_profile(profile)
+            except ConfigNotSavable as exc:
+                return False, str(exc)
+        self._reload_profile_combo()
+        return True, ""
+
+    def ui_set_profile_processes(self, profile_id: str, names):
+        cleaned = [n.strip() for n in names if n and n.strip()]
+        if self._active and profile_id == self._active.profile.id:
+            self._active.set_process_names(cleaned)
+            self._engine.set_process_names(cleaned)
+            self._update_gate_display()
+        else:
+            profile = load_profile(profile_id)
+            if profile is None:
+                return False, f"方案 {profile_id} 不存在"
+            profile.process_names = cleaned
+            try:
+                save_profile(profile)
+            except ConfigNotSavable as exc:
+                return False, str(exc)
+        self._reload_profile_combo()
+        return True, ""
+
+    def ui_delete_profile(self, profile_id: str):
+        if len(self._profile_ids) <= 1:
+            return False, "至少要保留一个方案"
+        if self._active and profile_id == self._active.profile.id:
+            # 先切走再删，别让 ActiveProfile 悬在已删除的方案上
+            others = [p for p in self._profile_ids if p != profile_id]
+            was_running = self._engine.is_active
+            if was_running:
+                self._engine.stop_mapping()
+            self._apply_profile(others[0])
+            if was_running:
+                self._engine.start_mapping()
+        delete_profile(profile_id)
+        self._reload_profile_combo()
+        return True, ""
 
     def _apply_profile(self, profile_id: str) -> None:
         if self._active is None:
             self._active = ActiveProfile(profile_id, on_save_failed=self._report_save_refused)
         else:
             self._active.switch_to(profile_id)
+
+        # 撤销栈不跨方案 —— 上一个方案的快照还原到这个方案是灾难
+        self._history.clear()
+        self._update_undo_enabled()
 
         # app_state.json 损坏时这里会拒写；不能让它把切方案和启动一起搞挂
         self._save_guarded(lambda: save_active_profile_id(profile_id))
@@ -364,19 +504,20 @@ class MainWindow(QMainWindow):
         return is_process_foreground(self._active.profile.process_names)
 
     def _update_gate_display(self) -> None:
+        """门控状态 → 顶栏胶囊
+
+        每 tick 都会被调（引擎不跑时引擎侧不查），但 StatusPill 对
+        相同的 (文字, 色调) 直接忽略，不会再每帧 setStyleSheet。
+        """
         open_ = self._check_gate()
         self._gate_open = open_
         name = self._active.profile.display_name if self._active else ""
         if self._active and not self._active.profile.process_names:
-            self._gate_dot.setStyleSheet(f"color: {THEME['accent']};")
-            self._gate_label.setText(f"{name} · 任意窗口")
-            return
-        if open_:
-            self._gate_dot.setStyleSheet(f"color: {THEME['accent']};")
-            self._gate_label.setText(f"已对准 {name}")
+            self._gate_pill.set_state(f"{name} · 任意窗口", "ok")
+        elif open_:
+            self._gate_pill.set_state(f"已对准 {name}", "ok")
         else:
-            self._gate_dot.setStyleSheet(f"color: {THEME['warn']};")
-            self._gate_label.setText(f"未对准 {name}")
+            self._gate_pill.set_state(f"未对准 {name}", "warn")
 
     def _push_profile_to_consumers(self) -> None:
         """ActiveProfile 是唯一源头；table 和 engine 各持一份工作副本"""
@@ -385,14 +526,14 @@ class MainWindow(QMainWindow):
 
         self._joystick.threshold = profile.threshold
         self._mapping_table.load_mappings(mappings)
-        self._status_bar.set_threshold(profile.threshold)
-        self._status_bar.set_mouse_sensitivity(profile.mouse_sensitivity)
-        self._status_bar.set_scroll_sensitivity(profile.scroll_sensitivity)
+        self._binding_panel.set_mappings(mappings)
+        self._gamepad_panel.set_bindings(mappings)
         self._engine.set_mappings(mappings)
         self._engine.set_process_names(profile.process_names)
         self._apply_stick_settings(profile)
         self._engine.set_gate_checker(self._check_gate)
         self._update_gate_display()
+        self._update_liveness()
         self._warn_unreadable_profile()
 
     def _report_save_refused(self, message: str) -> None:
@@ -454,15 +595,15 @@ class MainWindow(QMainWindow):
             self._engine.stop_mapping()
 
         connected = self._joystick.refresh()
+        # 手柄没插着，「启动后自动开始映射」无从谈起
+        self._status_bar.set_auto_start_mapping_enabled(connected)
         if connected:
             name = self._joystick.name
-            self._conn_dot.setStyleSheet(f"color: {THEME['accent']};")
-            self._conn_label.setText(f"已连接: {name[:24]}")
+            self._conn_pill.set_state(f"已连接 · {name[:24]}", "ok")
             self._gamepad_panel.set_info(name, True)
             self._status_bar.set_status("手柄已连接")
         else:
-            self._conn_dot.setStyleSheet(f"color: {THEME['warn']};")
-            self._conn_label.setText("未连接")
+            self._conn_pill.set_state("未连接", "warn")
             self._gamepad_panel.set_info("未检测到手柄", False)
             self._status_bar.set_status("请连接手柄后点击刷新")
 
@@ -494,36 +635,97 @@ class MainWindow(QMainWindow):
         for slot in frame.just_pressed:
             if slot not in (IDX_LT, IDX_START):
                 self._mapping_table.highlight_button(slot)
+                self._follow_physical_press(slot)
         for slot in frame.just_released:
             if slot not in (IDX_LT, IDX_START):
                 self._mapping_table.clear_highlight_if(slot)
+
+    def _follow_physical_press(self, slot: int) -> None:
+        """实体按键即点即亮：面板已在编辑态时，按手柄键直接切到那个槽位
+
+        只在编辑态跟随 —— 否则平时按手柄，面板会自己乱跳；
+        运行中绝不跟随，那时每个按键都是真实输出。
+        """
+        if self._engine.is_active:
+            return
+        if binding_kind(slot) == RESERVED:
+            return
+        if self._binding_panel.current_slot is None:
+            return
+        self._binding_panel.select_slot(slot)
+
+    def _update_liveness(self) -> None:
+        """画布三态亮度：运行且对准=全亮 / 运行但门关=半暗 / 停止=全暗"""
+        if self._engine.is_active:
+            state = "active" if self._gate_open else "gated"
+        else:
+            state = "idle"
+        self._gamepad_panel.set_liveness(state)
 
     def _on_slot_clicked(self, slot: int) -> None:
         """点手柄图上的键 —— 这是绑定的主入口"""
         if binding_kind(slot) == CONFLICT:
             self._status_bar.set_status(f"注意：{conflict_reason(slot)}")
-        self._open_bind_dialog(slot)
+        self._request_bind(slot)
 
     def _on_slot_refused(self, slot: int) -> None:
-        """保留槽位不给绑，但要说清它被什么占用了"""
-        self._status_bar.set_status(conflict_reason(slot))
+        """保留槽位不给绑 —— 面板里说明它被什么占用"""
+        self._request_bind(slot)
 
-    def _open_bind_dialog(self, button_index: int):
-        if self._engine.is_active:
-            QMessageBox.warning(self, "提示", "请先停止映射，再进行按键绑定。")
-            return
-        dialog = KeyBindDialog(button_index, self)
-        dialog.key_bound.connect(self._on_key_bound)
-        dialog.exec()
+    def _on_table_row_selected(self, slot: int) -> None:
+        self._request_bind(slot)
 
-    def _on_key_bound(self, button_index: int, key_name: str):
-        self._mapping_table.set_mapping(button_index, key_name)
+    def _request_bind(self, slot: int) -> None:
+        """打开一个槽位的绑定编辑；运行中也允许，改动即时生效"""
+        self._binding_panel.set_live_hint(self._engine.is_active)
+        self._binding_panel.select_slot(slot)
+
+    def _on_panel_selection_changed(self, slot) -> None:
+        """面板选中谁，画布呼吸圈和列表就同步谁（含取消选中 None）"""
+        self._gamepad_panel.set_selected(slot)
+        self._mapping_table.select_slot(slot)
+
+    def _on_bind_committed(self, slot: int, combo: str) -> None:
+        self._mapping_table.set_mapping(slot, combo)
+
+    def _on_bind_cleared(self, slot: int) -> None:
+        self._mapping_table.clear_slot(slot)
 
     def _on_mapping_changed(self):
-        self._active.set_mappings(self._mapping_table.get_mappings())
+        old = self._active.mappings
+        new = self._mapping_table.get_mappings()
+        if new != old:
+            self._history.push(old)
+            # 运行中改绑：先释放被改槽位按住的旧输出，再换表，防止旧键卡死
+            self._engine.release_slots(
+                {s for s in set(old) | set(new) if old.get(s) != new.get(s)}
+            )
+        self._apply_mappings(new)
+        self._update_undo_enabled()
+
+    def _apply_mappings(self, mappings) -> None:
+        """把一张映射表落到 ActiveProfile / 引擎 / 三个视图 —— 改绑与撤销共用"""
+        self._active.set_mappings(mappings)
         merged = self._active.mappings
         self._engine.set_mappings(merged)
         self._mapping_table.load_mappings(merged)
+        self._binding_panel.set_mappings(merged)
+        self._gamepad_panel.set_bindings(merged)
+
+    def _undo_mapping_change(self):
+        previous = self._history.undo()
+        if previous is None:
+            return
+        current = self._active.mappings
+        self._engine.release_slots(
+            {s for s in set(current) | set(previous) if current.get(s) != previous.get(s)}
+        )
+        self._apply_mappings(previous)
+        self._update_undo_enabled()
+        self._status_bar.set_status("已撤销上一次绑定改动")
+
+    def _update_undo_enabled(self):
+        self._undo_btn.setEnabled(self._history.can_undo)
 
     def _on_threshold_changed(self, value: float):
         self._joystick.threshold = value
@@ -538,9 +740,6 @@ class MainWindow(QMainWindow):
         self._apply_stick_settings(self._active.profile)
 
     def _clear_all_mappings(self):
-        if self._engine.is_active:
-            QMessageBox.warning(self, "提示", "请先停止映射。")
-            return
         reply = QMessageBox.question(
             self, "确认", "清除所有按键映射？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -581,6 +780,11 @@ class MainWindow(QMainWindow):
 
     def _on_engine_state(self, running: bool):
         self._status_bar.set_running(running)
+        self._binding_panel.set_live_hint(running)
+        self._update_liveness()
+        # 任务栏图标和窗口边框一起换色：映射中亮青，停止时暗青
+        self.setWindowIcon(make_gamepad_icon(running))
+        apply_dark_frame(self, border_color=ACCENT if running else ACCENT_DIM)
         if not running:
             self._status_bar.set_status("已停止")
 
@@ -590,6 +794,7 @@ class MainWindow(QMainWindow):
     def _on_gate_changed(self, open_: bool, _label: str):
         self._gate_open = open_
         self._update_gate_display()
+        self._update_liveness()
 
     def closeEvent(self, event):
         # 点 × 只收进托盘：映射还在跑，关掉窗口不该把它一起关了。

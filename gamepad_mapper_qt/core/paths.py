@@ -8,8 +8,9 @@
 
 - **可写资源**（config/）—— 必须落在 exe 旁边（便携式），
   写进打包的临时解压目录会在退出时蒸发
-- **只读资源**（theme.qss）—— 打包时被塞进 bundle，位置由
-  PyInstaller 决定（onefile 是 sys._MEIPASS，onedir 是 _internal/）
+
+（曾经还有第三类「只读资源 theme.qss」，样式改为运行时从
+ui/styles/tokens.py 生成后就没了 —— 别为不存在的资源写路径逻辑。）
 """
 
 import os
@@ -29,15 +30,6 @@ def app_dir() -> str:
     if is_frozen():
         return os.path.dirname(os.path.abspath(sys.executable))
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-
-def resource_path(*parts: str) -> str:
-    """只读资源的绝对路径，参数是相对项目根的各段"""
-    if is_frozen():
-        base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(sys.executable)))
-    else:
-        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(base, *parts)
 
 
 def launch_target() -> str:

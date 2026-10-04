@@ -5,16 +5,28 @@
 ABXY 右上、右摇杆右下），扳机与肩键在顶边。
 """
 
+import math
+import time
 from typing import List
 
-from PyQt6.QtCore import Qt, QRectF, QPointF, pyqtSignal
+from PyQt6.QtCore import Qt, QRectF, QPointF, QTimer, pyqtSignal
 from PyQt6.QtGui import (
     QPainter, QColor, QPen, QBrush, QRadialGradient, QLinearGradient,
     QFont, QPainterPath,
 )
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFrame
 
-from core.constants import THEME
+from ui.styles.tokens import (
+    ACCENT,
+    BORDER_SOFT,
+    CANVAS_BG,
+    CANVAS_GATED_ALPHA,
+    CANVAS_IDLE_ALPHA,
+    TEXT_ON_ACCENT,
+    TEXT_SUB,
+    THEME,
+    WARN,
+)
 from core.joystick_manager import PollResult
 from core.button_map import IDX_LT, IDX_RT
 # 扇形的几何常量从 slots 引入，不在这里再写一份 ——
@@ -49,8 +61,27 @@ class GamepadCanvas(QWidget):
         self._right_stick = (0.0, 0.0)
         self._lt = 0.0
         self._rt = 0.0
-        self._dimmed = False
+        self._liveness = "idle"    # active / gated / idle
+        self._selected: int | None = None
         self.setMinimumSize(420, 300)
+
+        # 呼吸动效的驱动：只在需要时（有选中槽位 / 映射运行中）刷新重绘，
+        # 空闲时彻底停掉，不为好看白烧 GPU
+        self._breath_timer = QTimer(self)
+        self._breath_timer.setInterval(33)
+        self._breath_timer.timeout.connect(self.update)
+        self._ensure_breath()
+
+    def _ensure_breath(self) -> None:
+        should_run = self._selected is not None or self._liveness in ("active", "gated")
+        if should_run and not self._breath_timer.isActive():
+            self._breath_timer.start()
+        elif not should_run and self._breath_timer.isActive():
+            self._breath_timer.stop()
+
+    def _breath(self) -> float:
+        """0..1 的呼吸相位，正弦缓动"""
+        return 0.5 + 0.5 * math.sin(time.monotonic() * 2.0)
 
     def update_state(self, result: PollResult):
         self._pressed = list(result.pressed)
@@ -94,10 +125,22 @@ class GamepadCanvas(QWidget):
         else:
             self.slot_clicked.emit(hit)
 
-    def set_dimmed(self, dimmed: bool):
-        """未启动映射或闸门未对准时变暗 —— 一眼看出按了没用"""
-        if dimmed != self._dimmed:
-            self._dimmed = dimmed
+    def set_liveness(self, state: str):
+        """三态亮度：active 全亮 / gated 运行但门未对准(明显压暗) / idle 未运行(轻压暗)
+
+        改绑发生在未运行时，所以 idle 只轻压 —— 「按了没用」主要由
+        右下角状态胶囊说话；gated 才是真正该收手的信号。
+        """
+        if state != self._liveness:
+            self._liveness = state
+            self._ensure_breath()
+            self.update()
+
+    def set_selected(self, slot):
+        """选中槽位（与右侧绑定面板同步）—— 画呼吸光圈"""
+        if slot != self._selected:
+            self._selected = slot
+            self._ensure_breath()
             self.update()
 
     # ---------- 绘制 ----------
@@ -152,7 +195,7 @@ class GamepadCanvas(QWidget):
     def paintEvent(self, _event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.fillRect(self.rect(), QColor("#141426"))
+        painter.fillRect(self.rect(), QColor(CANVAS_BG))
         self._draw_grid(painter, self.width(), self.height())
 
         ox, oy, fw, fh = self._frame_rect()
@@ -164,8 +207,12 @@ class GamepadCanvas(QWidget):
             self._draw_overlay(painter, slot, fw)
 
         painter.resetTransform()
-        if self._dimmed:
-            painter.fillRect(self.rect(), QColor(15, 15, 26, 150))
+        alpha = {"gated": CANVAS_GATED_ALPHA, "idle": CANVAS_IDLE_ALPHA}.get(
+            self._liveness, 0
+        )
+        if alpha:
+            painter.fillRect(self.rect(), QColor(11, 11, 22, alpha))
+        self._draw_status_chip(painter)
         painter.end()
 
     def _draw_body(self, painter, w, h):
@@ -214,16 +261,18 @@ class GamepadCanvas(QWidget):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawPath(path)
 
-        # 边缘光：上沿青、下沿紫，做出体积与科技味
+        # 边缘光：上沿青、下沿紫，做出体积与科技味；
+        # 映射运行中随呼吸微微脉动 —— 「活着」的感觉不用看状态栏就知道
         rim = QLinearGradient(0, w * 0.08, 0, w * 0.70)
         rim.setColorAt(0.0, QColor(0, 240, 195, 255))
         rim.setColorAt(0.42, QColor(120, 140, 210, 130))
         rim.setColorAt(1.0, QColor(150, 110, 255, 235))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         # 先描一道粗而透明的做外辉光，再描一道细而实的做硬边
+        pulse = 0.55 + 0.45 * self._breath() if self._liveness == "active" else 1.0
         halo = QLinearGradient(0, w * 0.08, 0, w * 0.70)
-        halo.setColorAt(0.0, QColor(0, 240, 195, 60))
-        halo.setColorAt(1.0, QColor(150, 110, 255, 55))
+        halo.setColorAt(0.0, QColor(0, 240, 195, int(60 * pulse)))
+        halo.setColorAt(1.0, QColor(150, 110, 255, int(55 * pulse)))
         painter.setPen(QPen(QBrush(halo), max(4.0, w * 0.010)))
         painter.drawPath(path)
         painter.setPen(QPen(QBrush(rim), max(1.6, w * 0.0032)))
@@ -267,7 +316,7 @@ class GamepadCanvas(QWidget):
             self._draw_dpad_petal(painter, cx, cy, r, slot, pressed)
 
     def _draw_overlay(self, painter, slot, w):
-        """叠加层：已绑定的标记、悬停高亮、保留槽位的禁用叉"""
+        """叠加层：选中呼吸圈、已绑定的标记、悬停高亮、保留槽位的禁用叉"""
         px, py, pr = slot.panel
         cx, cy, r = w * px, w * py, w * pr
         kind = binding_kind(slot.index)
@@ -278,6 +327,19 @@ class GamepadCanvas(QWidget):
             "trigger": (r * 0.72, r * 0.62),
             "dpad": (r * 0.92, r * 0.92),
         }.get(slot.render, (r, r))
+
+        if self._selected == slot.index and kind != RESERVED:
+            breath = self._breath()
+            ring = QColor(ACCENT)
+            ring.setAlpha(int(130 + 110 * breath))
+            self._glow(painter, cx, cy, max(hw, hh) * 2.4, ring,
+                       int(36 + 36 * breath))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(ring, max(2.0, r * 0.09)))
+            pad = max(hw, hh) * 0.34
+            painter.drawRoundedRect(
+                QRectF(cx - hw - pad, cy - hh - pad, (hw + pad) * 2, (hh + pad) * 2),
+                hh + pad, hh + pad)
 
         if kind == RESERVED:
             # 保留槽位：斜杠，表示点了也绑不上
@@ -452,6 +514,30 @@ class GamepadCanvas(QWidget):
         painter.setBrush(QBrush(QColor("#0b0b18") if pressed else color.lighter(115)))
         painter.drawPath(tri)
 
+    def _draw_status_chip(self, painter):
+        """右下角状态胶囊 —— 画布自己回答「现在按手柄有没有用」"""
+        text, bg, fg = {
+            "active": ("映射中 · 门开", QColor(ACCENT), QColor(TEXT_ON_ACCENT)),
+            "gated": ("映射中 · 门未对准", QColor(WARN), QColor(TEXT_ON_ACCENT)),
+            "idle": ("已停止", QColor(BORDER_SOFT), QColor(TEXT_SUB)),
+        }[self._liveness]
+
+        font = QFont("Segoe UI", 12, QFont.Weight.Bold)
+        painter.setFont(font)
+        metrics = painter.fontMetrics()
+        pad_x, pad_y = 14, 7
+        chip_w = metrics.horizontalAdvance(text) + pad_x * 2
+        chip_h = metrics.height() + pad_y * 2
+        x = self.width() - chip_w - 14
+        y = self.height() - chip_h - 12
+
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(bg))
+        painter.drawRoundedRect(QRectF(x, y, chip_w, chip_h), chip_h / 2, chip_h / 2)
+        painter.setPen(QPen(fg))
+        painter.drawText(QRectF(x, y, chip_w, chip_h),
+                         Qt.AlignmentFlag.AlignCenter, text)
+
 
 class GamepadPanel(QFrame):
     """手柄可视化面板容器"""
@@ -486,8 +572,11 @@ class GamepadPanel(QFrame):
     def update_state(self, result: PollResult):
         self._canvas.update_state(result)
 
-    def set_dimmed(self, dimmed: bool):
-        self._canvas.set_dimmed(dimmed)
+    def set_liveness(self, state: str):
+        self._canvas.set_liveness(state)
+
+    def set_selected(self, slot):
+        self._canvas.set_selected(slot)
 
     def set_info(self, text: str, connected: bool):
         self._info.setText(text)

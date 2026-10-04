@@ -80,6 +80,14 @@ class ActiveProfile:
         self._profile.mappings = self._strip_universal_mouse(mappings)
         self._persist()
 
+    def set_display_name(self, value: str) -> None:
+        self._profile.display_name = value
+        self._persist()
+
+    def set_process_names(self, names) -> None:
+        self._profile.process_names = list(names)
+        self._persist()
+
     def _strip_universal_mouse(self, mappings: Dict[int, str]) -> Dict[int, str]:
         """与统一层取值相同的项不写盘，免得每个方案重复一遍
 

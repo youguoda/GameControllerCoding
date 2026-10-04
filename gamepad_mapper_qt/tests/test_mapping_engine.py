@@ -304,3 +304,51 @@ def test_滚轮哨兵按下时滚一格_松开不动():
     assert ("wheel", 1.0) in 按下后
     assert ("wheel", -1.0) in 按下后
     assert ms.日志 == [], "松开滚轮不该再滚"
+
+
+# ---------- 运行中改绑的防卡死释放 ----------
+
+def test_release_slots_释放正按住的输出(引擎):
+    eng, kb, _ = 引擎
+    eng.set_mappings({0: "y"})
+    eng.consume(_帧(just_pressed=frozenset({0})))
+    kb.日志.clear()
+
+    eng.release_slots([0])
+
+    assert kb.日志 == [("release", "y")]
+
+
+def test_release_slots_未绑定的槽位无事发生(引擎):
+    eng, kb, _ = 引擎
+    eng.set_mappings({})
+
+    eng.release_slots([3])
+
+    assert kb.日志 == []
+
+
+def test_release_slots_保留槽位跳过(引擎):
+    eng, kb, _ = 引擎
+    eng.set_mappings({6: "a", 7: "b"})     # 引擎本就不处理 LT/RT
+
+    eng.release_slots([6, 7, 0])
+
+    assert kb.日志 == []
+
+
+def test_release_slots_单键失败就地上报不外抛(引擎):
+    eng, kb, _ = 引擎
+    eng.set_mappings({0: "y", 1: "u"})
+
+    def 炸(key):
+        raise RuntimeError("boom")
+
+    kb.release = 炸
+    错误 = []
+    eng.error_occurred.connect(lambda msg: 错误.append(msg))
+
+    eng.release_slots([0, 1])              # 第一个槽位失败不该拖垮第二个
+
+    # 两个槽位是不同动作，各自上报一次；关键是循环没被异常打断
+    assert len(错误) == 2

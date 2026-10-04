@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout, QHeaderView, QAbstractItemView,
 )
 
-from core.constants import THEME
+from ui.styles.tokens import THEME
 from core.slots import SLOTS, CONFLICT, RESERVED, binding_kind, conflict_reason
 
 _ROW_HEIGHT = 40
@@ -29,6 +29,7 @@ class MappingTable(QTableWidget):
     """已绑定槽位的列表；行数随绑定变化"""
 
     bind_requested = pyqtSignal(int)
+    row_selected = pyqtSignal(int)
     mapping_changed = pyqtSignal()
 
     def __init__(self, parent=None):
@@ -57,6 +58,7 @@ class MappingTable(QTableWidget):
         self.setColumnWidth(2, 176)
 
         self.cellDoubleClicked.connect(self._on_double_click)
+        self.cellClicked.connect(self._on_row_click)
 
     # ---------- 行的构建 ----------
 
@@ -138,6 +140,20 @@ class MappingTable(QTableWidget):
         self._rebuild()
         self.mapping_changed.emit()
 
+    def clear_slot(self, button_index: int):
+        """清除单个槽位（面板的清除按钮走这里）"""
+        if button_index in self._mappings:
+            self._mappings.pop(button_index)
+            self._rebuild()
+            self.mapping_changed.emit()
+
+    def select_slot(self, button_index: int):
+        """面板/画布选中某槽位时，让表里对应行可见且选中"""
+        if button_index in self._row_slots:
+            row = self._row_slots.index(button_index)
+            self.selectRow(row)
+            self.scrollToItem(self.item(row, 0))
+
     def load_mappings(self, mappings: Dict[int, str]):
         self._mappings = dict(mappings)
         self._rebuild()
@@ -162,9 +178,11 @@ class MappingTable(QTableWidget):
     # ---------- 内部 ----------
 
     def _clear_slot(self, slot_index: int):
-        self._mappings.pop(slot_index, None)
-        self._rebuild()
-        self.mapping_changed.emit()
+        self.clear_slot(slot_index)
+
+    def _on_row_click(self, row: int, _col: int):
+        if 0 <= row < len(self._row_slots):
+            self.row_selected.emit(self._row_slots[row])
 
     def _on_double_click(self, row: int, _col: int):
         if 0 <= row < len(self._row_slots):

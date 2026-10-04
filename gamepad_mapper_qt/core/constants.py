@@ -33,21 +33,4 @@ SCROLL_SENSITIVITY_MIN = 0.1
 SCROLL_SENSITIVITY_MAX = 2.0
 LT_LONG_PRESS_SEC = 0.4
 
-THEME = {
-    "bg": "#0f0f1a",
-    "panel": "#1a1a2e",
-    "card": "#252542",
-    "accent": "#00d4aa",
-    "accent2": "#7c5cff",
-    "danger": "#ff5c5c",
-    "warn": "#ffb84d",
-    "success": "#00d4aa",
-    "text": "#ffffff",
-    "subtext": "#a0a0b8",
-    "dim": "#3a3a5c",
-    "dark": "#12121f",
-    "border": "#4a4a6a",
-    "hover": "#353555",
-}
-
 DEFAULT_THRESHOLD = 0.5

@@ -146,6 +146,18 @@ def save_profile(profile: HarnessProfile) -> None:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
+def delete_profile(profile_id: str) -> bool:
+    """删除方案文件；文件本来就不存在时返回 False
+
+    只管删文件。删的是当前激活方案时的切换逻辑归 MainWindow。
+    """
+    path = os.path.join(_profiles_dir(), f"{profile_id}.json")
+    if not os.path.isfile(path):
+        return False
+    os.remove(path)
+    return True
+
+
 def load_app_state() -> AppState:
     path = _app_state_path()
     if not os.path.isfile(path):

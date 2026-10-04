@@ -37,16 +37,6 @@ def test_打包后配置目录跟着走(假装已打包, monkeypatch):
     assert cs._app_state_path().startswith(str(假装已打包))
 
 
-def test_打包后只读资源走_MEIPASS(假装已打包, monkeypatch):
-    monkeypatch.setattr(sys, "_MEIPASS", str(假装已打包 / "_internal"), raising=False)
-    p = paths.resource_path("ui", "styles", "theme.qss")
-    assert p == str(假装已打包 / "_internal" / "ui" / "styles" / "theme.qss")
-
-
-def test_源码运行时能找到样式表():
-    assert os.path.isfile(paths.resource_path("ui", "styles", "theme.qss"))
-
-
 def test_打包后自启命令就是_exe_本身(假装已打包):
     """不能再拼 python.exe + main.py —— 打包后两者都不存在"""
     命令 = paths.launch_target()

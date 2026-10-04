@@ -27,7 +27,12 @@ dist/
 *.egg-info/
 *.egg
 *.manifest
-*.spec
+# 模板规则 *.spec 误伤了 PyInstaller 配置 —— GamepadVibeController.spec 是要跟踪的
+!GamepadVibeController.spec
+!gamepad_mapper_qt/*.spec
+
+# ---- ZCode 工作区本地目录(不属于项目) ----
+.zcode/
 
 # ---- Logs / runtime ----
 *.log

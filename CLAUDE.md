@@ -138,9 +138,7 @@ ActiveProfile(profile_id, on_save_failed=回调)
 - `config/profiles/<id>.json` —— 每个方案一份；`PROFILE_ORDER` 决定下拉框顺序，磁盘上多出来的 json 会排在后面
 - `config/app_state.json` —— 当前方案 id、开机自启、启动后自动映射
 
-`config/mapping.json` 和 `load_config()` / `save_config()` 是遗留兼容层，**当前代码没有任何地方调用**，改配置格式时不必迁就它。
-
-保存时机很密：改映射、改滑块、切方案、关窗口都会立刻 `save_profile()`，没有"取消"路径。
+保存时机很密：改映射、改滑块、切方案、关窗口都会立刻 `save_profile()`，没有"取消"路径；误改靠 `MappingHistory`（Ctrl+Z，仅绑定变更、不跨方案）兜底。
 
 ### 读不了的文件绝不写回去
 
@@ -174,11 +172,11 @@ UI 侧全部经由 `MainWindow._安全保存()` 这一个漏斗接住 `ConfigNot
 
 ## UI 层
 
-`ui/main_window.py` 是全部胶水：持有 joystick / input / keyboard / mouse / engine，widget 只通过 pyqtSignal 往上报，不直接碰 core。样式集中在 `ui/styles/theme.qss`，配色常量在 `constants.THEME`，两边需要手动保持一致。界面文案与注释用中文，**标识符用英文**。
+`ui/main_window.py` 是全部胶水：持有 joystick / input / keyboard / mouse / engine，widget 只通过 pyqtSignal 往上报，不直接碰 core。样式由 `ui/styles/tokens.py` 的 `build_qss()` 在运行时生成（配色/字号/圆角的唯一事实源），没有静态 qss 文件。界面文案与注释用中文，**标识符用英文**。
 
 ### 手柄图是绑定的编辑面
 
-`GamepadCanvas` 不只是状态显示，**点它上面的键就是绑定入口**：`mousePressEvent` → `slots.hit_test()` → 按 `binding_kind()` 分流（可绑弹对话框 / 冲突先提示再弹 / 保留只说明）。`GamepadPanel` 只做信号转发，不参与命中 —— 它的坐标系是容器的，拿去做 hit_test 会全错（这个错误犯过一次）。
+`GamepadCanvas` 不只是状态显示，**点它上面的键就是绑定入口**：`mousePressEvent` → `slots.hit_test()` → 按 `binding_kind()` 分流（可绑选中右侧 BindingPanel / 冲突先提示再选中 / 保留在面板里说明占用）。`BindingPanel`（`ui/widgets/binding_panel.py`）就地编辑，三态提示的展示位在这里；捕获逻辑在 `ui/widgets/key_capture.py`，引擎不持 UI，宿主把 QKeyEvent 转进去。`GamepadPanel` 只做信号转发，不参与命中 —— 它的坐标系是容器的，拿去做 hit_test 会全错（这个错误犯过一次）。
 
 图按 Xbox 真实布局绘制，轮廓是**基本图形求并集**（中央圆角矩形 ∪ 两个护翼圆 ∪ 两条胶囊握把），不是手调贝塞尔 —— 后者每个控制点都要靠眼睛，改起来没有着力点。
 

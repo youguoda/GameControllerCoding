@@ -58,6 +58,19 @@ class MappingEngine(QObject):
         # 改了绑定就重新给每个动作一次上报机会
         self._reported_actions.clear()
 
+    def release_slots(self, slots) -> None:
+        """改绑前释放这些槽位正按住的输出，防止旧键卡死
+
+        典型场景：按住 A（ctrl+enter）时把 A 改绑成别的 —— 之后的
+        松开事件读的是新映射表，旧组合键永远等不到 release。
+        改绑前对旧映射放一次手。运行中改绑能成立，靠的就是这个。
+        """
+        for slot in slots:
+            try:
+                self._release_slot(slot)
+            except Exception as exc:
+                self._report_failure(self._mappings.get(slot, f"槽位 {slot}"), exc)
+
     def set_gate_checker(self, checker: Optional[Callable[[], bool]]) -> None:
         self._gate_checker = checker
 
